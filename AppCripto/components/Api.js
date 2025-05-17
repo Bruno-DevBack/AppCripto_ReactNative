@@ -4,16 +4,68 @@ import { Alert } from 'react-native';
 // Função para buscar as Criptos
 export const fetchCripto = async (setRegistros) => {
   try {
-    const response = await fetch(API_URL);
+    // Inicia a requisição com timeout de 10 segundos
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const response = await fetch(API_URL, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
     if (!response.ok) {
-      throw new Error('Erro ao buscar Criptos');
+      throw new Error(`Erro HTTP: ${response.status}`);
     }
-    const data = await response.json();
-    console.log('Dados recebidos:', data); // Para debugar a resposta da API
-    setRegistros(data);  // Atualiza o estado com os dados recebidos
+
+    const textResponse = await response.text();
+    let responseData;
+    
+    try {
+      responseData = JSON.parse(textResponse);
+    } catch (parseError) {
+      console.error('Erro ao processar resposta JSON:', parseError);
+      throw new Error('Erro ao processar dados da API');
+    }
+
+    // Verifica se a resposta tem a estrutura esperada
+    if (!responseData.data || !Array.isArray(responseData.data)) {
+      console.warn('Resposta da API não contém um array de dados:', responseData);
+      setRegistros([]);
+      return;
+    }
+
+    // Mapeia os dados para o formato esperado pelo app
+    const formattedData = responseData.data.map(item => ({
+      codigo: item.id,
+      nomeCripto: item.nomeCripto,
+      siglaCripto: item.siglaCripto
+    }));
+
+    console.log('Dados formatados:', formattedData);
+    setRegistros(formattedData);
   } catch (error) {
     console.error('Erro ao buscar Criptos:', error);
-    throw error;
+    
+    let mensagem = 'Erro ao buscar as criptomoedas.';
+    if (error.name === 'AbortError') {
+      mensagem = 'Tempo limite excedido. Verifique sua conexão.';
+    } else if (error.message.includes('HTTP')) {
+      mensagem = `Erro no servidor: ${error.message}`;
+    }
+    
+    Alert.alert(
+      'Erro',
+      mensagem,
+      [{ text: 'OK' }]
+    );
+    
+    setRegistros([]);
   }
 };
 
@@ -59,33 +111,31 @@ export const deleteCripto = async (criptoId, setRegistros) => {
   try {
     const response = await fetch(`${API_URL}/${criptoId}`, {
       method: 'DELETE',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      }
     });
 
-    if (response.ok) {
-      const responseData = await response.json();
-      if (responseData.success) {
-        Alert.alert('Sucesso!', responseData.message);
-        setRegistros((prevRegistros) => {
-          const novaLista = prevRegistros.filter((cripto) => cripto.codigo !== criptoId);
-          return novaLista;
-        });
-      } else {
-        Alert.alert('Erro', responseData.message);
-      }
+    const textResponse = await response.text();
+    let responseData = null;
+
+    try {
+      responseData = JSON.parse(textResponse);
+    } catch (error) {
+      console.warn('A resposta não é um JSON válido.');
+    }
+
+    if (response.ok && responseData?.success) {
+      Alert.alert('Sucesso!', responseData.message || 'Criptomoeda excluída com sucesso!');
+      setRegistros((prevRegistros) => {
+        return prevRegistros.filter((cripto) => cripto.codigo !== criptoId);
+      });
     } else {
-      const textResponse = await response.text();
-      let responseData = null;
-
-      try {
-        responseData = JSON.parse(textResponse);
-      } catch (error) {
-        console.warn('A resposta não é um JSON válido.');
-      }
-
-      throw new Error(responseData?.message || 'Erro desconhecido ao excluir o Cripto');
+      throw new Error(responseData?.message || 'Erro desconhecido ao excluir a Criptomoeda');
     }
   } catch (error) {
-    console.error('Erro ao excluir Cripto:', error.message);
+    console.error('Erro ao excluir Criptomoeda:', error.message);
     Alert.alert('Erro ao excluir', `Detalhes: ${error.message}`);
   }
 };
@@ -93,31 +143,47 @@ export const deleteCripto = async (criptoId, setRegistros) => {
 // Função para atualizar Cripto
 export const updateCripto = async (criptoId, updatedData, navigation) => {
   try {
+    // Enviando os dados com os nomes corretos dos campos
     const response = await fetch(`${API_URL}/${criptoId}`, {
       method: 'PUT',
       headers: {
+        'Accept': 'application/json',
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(updatedData),
+      body: JSON.stringify({
+        nomeCripto: updatedData.nomeCripto,
+        siglaCripto: updatedData.siglaCripto
+      }),
     });
 
-    if (response.status === 200) {
-      Alert.alert('Sucesso!', 'Cripto atualizada com sucesso!');
-      navigation.navigate('Home');
-    } else {
-      const textResponse = await response.text();
-      let responseData;
-      try {
-        responseData = JSON.parse(textResponse);
-      } catch (error) {
-        console.warn('A resposta não é um JSON válido.');
-        responseData = null;
-      }
+    const textResponse = await response.text();
+    console.log('Resposta da API:', textResponse);
 
-      throw new Error(responseData?.message || 'Erro desconhecido ao atualizar o Cripto');
+    let responseData;
+    try {
+      responseData = JSON.parse(textResponse);
+    } catch (error) {
+      console.warn('A resposta não é um JSON válido.');
+      responseData = null;
+    }
+
+    if (response.ok && responseData?.success) {
+      Alert.alert('Sucesso!', responseData.message || 'Criptomoeda atualizada com sucesso!', [
+        { text: 'OK', onPress: () => navigation.navigate('Home') }
+      ]);
+    } else {
+      if (responseData?.errors) {
+        // Formatando as mensagens de erro para exibição
+        const errorMessages = Object.values(responseData.errors)
+          .flat()
+          .join('\n');
+        throw new Error(errorMessages);
+      } else {
+        throw new Error(responseData?.message || 'Erro desconhecido ao atualizar a Criptomoeda');
+      }
     }
   } catch (error) {
-    console.error('Erro ao atualizar Cripto:', error.message);
+    console.error('Erro ao atualizar Criptomoeda:', error.message);
     Alert.alert('Erro ao atualizar', `Detalhes: ${error.message}`);
   }
 };
